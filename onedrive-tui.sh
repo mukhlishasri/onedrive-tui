@@ -190,24 +190,47 @@ while true; do
             manage_sync_list
             ;;
         "7")
-            systemctl --user start onedrive
+            systemctl --user start onedrive >/dev/null 2>&1
             if [ $? -eq 0 ]; then
-                whiptail --title "Success" --backtitle "$BACKTITLE" --msgbox "Background monitor service started successfully." 8 60
+                whiptail --title "Success" --backtitle "$BACKTITLE" --msgbox "Background monitor service started successfully via systemctl." 8 60
             else
-                whiptail --title "Error" --backtitle "$BACKTITLE" --msgbox "Failed to start background monitor service." 8 60
+                nohup onedrive --monitor > /dev/null 2>&1 &
+                if [ $? -eq 0 ]; then
+                    whiptail --title "Success (Fallback)" --backtitle "$BACKTITLE" --msgbox "systemctl failed. Started background monitor via nohup instead." 8 60
+                else
+                    whiptail --title "Error" --backtitle "$BACKTITLE" --msgbox "Failed to start background monitor service via both systemctl and nohup." 8 60
+                fi
             fi
             ;;
         "8")
-            systemctl --user stop onedrive
+            systemctl --user stop onedrive >/dev/null 2>&1
             if [ $? -eq 0 ]; then
+                pkill -f 'onedrive --monitor'
                 whiptail --title "Success" --backtitle "$BACKTITLE" --msgbox "Background monitor service stopped." 8 60
             else
-                whiptail --title "Error" --backtitle "$BACKTITLE" --msgbox "Failed to stop background monitor service." 8 60
+                pkill -f 'onedrive --monitor'
+                if [ $? -eq 0 ]; then
+                    whiptail --title "Success (Fallback)" --backtitle "$BACKTITLE" --msgbox "systemctl failed, but stopped nohup background monitor." 8 60
+                else
+                    whiptail --title "Error" --backtitle "$BACKTITLE" --msgbox "Failed to stop background monitor service (no nohup process found either)." 8 60
+                fi
             fi
             ;;
         "9")
             TEMP_FILE=$(mktemp)
             systemctl --user status onedrive > "$TEMP_FILE" 2>&1
+            if [ $? -ne 0 ]; then
+                echo -e "\nNote: systemctl failed or is not running. Checking for standalone nohup processes:" >> "$TEMP_FILE"
+                ps aux | grep '[o]nedrive --monitor' >> "$TEMP_FILE"
+                if [ $? -ne 0 ]; then
+                    echo "No standalone onedrive --monitor processes found." >> "$TEMP_FILE"
+                fi
+            else
+                if pgrep -f 'onedrive --monitor' > /dev/null; then
+                    echo -e "\nNote: found running standalone nohup processes as well:" >> "$TEMP_FILE"
+                    ps aux | grep '[o]nedrive --monitor' >> "$TEMP_FILE"
+                fi
+            fi
             whiptail --title "Monitor Service Status" --backtitle "$BACKTITLE" --scrolltext --textbox "$TEMP_FILE" 24 80
             rm -f "$TEMP_FILE"
             ;;
