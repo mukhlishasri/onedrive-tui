@@ -15,7 +15,74 @@ if ! command -v onedrive &> /dev/null; then
     exit 1
 fi
 
-BACKTITLE="OneDrive Client TUI"
+select_profile() {
+    local config_base="${HOME}/.config"
+    mkdir -p "$config_base"
+    
+    local profiles=()
+    for dir in "$config_base"/onedrive*; do
+        if [ -d "$dir" ]; then
+            local profile_name=$(basename "$dir")
+            if [ "$profile_name" = "onedrive" ]; then
+                profiles+=("default" "$dir")
+            else
+                local name=${profile_name#onedrive-}
+                profiles+=("$name" "$dir")
+            fi
+        fi
+    done
+    
+    if [ ${#profiles[@]} -eq 0 ]; then
+        mkdir -p "$config_base/onedrive"
+        profiles+=("default" "$config_base/onedrive")
+    fi
+    
+    profiles+=("CREATE_NEW" "Create a new profile")
+    
+    local choice
+    choice=$(whiptail --title "Select Profile" --backtitle "OneDrive Client TUI" \
+        --menu "Select a OneDrive profile to manage:" 20 60 10 \
+        "${profiles[@]}" \
+        3>&1 1>&2 2>&3)
+        
+    if [ $? -ne 0 ]; then
+        clear
+        exit 0
+    fi
+    
+    if [ "$choice" = "CREATE_NEW" ]; then
+        local new_name
+        new_name=$(whiptail --title "New Profile" --backtitle "OneDrive Client TUI" \
+            --inputbox "Enter name for the new profile (no spaces):" 10 50 \
+            3>&1 1>&2 2>&3)
+        if [ $? -ne 0 ] || [ -z "$new_name" ]; then
+            clear
+            exit 0
+        fi
+        
+        new_name=$(echo "$new_name" | tr -cd '[:alnum:]_-')
+        
+        ONEDRIVE_CONFDIR="${config_base}/onedrive-${new_name}"
+        mkdir -p "$ONEDRIVE_CONFDIR"
+        PROFILE_NAME="$new_name"
+    else
+        PROFILE_NAME="$choice"
+        if [ "$choice" = "default" ]; then
+            ONEDRIVE_CONFDIR="${config_base}/onedrive"
+        else
+            ONEDRIVE_CONFDIR="${config_base}/onedrive-${choice}"
+        fi
+    fi
+    
+    BACKTITLE="OneDrive Client TUI (Profile: $PROFILE_NAME)"
+    if [ "$PROFILE_NAME" = "default" ]; then
+        SVC_NAME="onedrive"
+    else
+        SVC_NAME="onedrive@${PROFILE_NAME}"
+    fi
+}
+
+select_profile
 show_menu() {
     whiptail --title "OneDrive Main Menu" \
         --backtitle "$BACKTITLE" \
@@ -41,7 +108,7 @@ pause() {
 }
 
 manage_sync_list() {
-    SYNC_LIST_FILE="${HOME}/.config/onedrive/sync_list"
+    SYNC_LIST_FILE="${ONEDRIVE_CONFDIR}/sync_list"
     mkdir -p "$(dirname "$SYNC_LIST_FILE")"
     touch "$SYNC_LIST_FILE"
     
@@ -53,7 +120,7 @@ manage_sync_list() {
 }
 
 edit_config() {
-    CONFIG_FILE="${HOME}/.config/onedrive/config"
+    CONFIG_FILE="${ONEDRIVE_CONFDIR}/config"
     mkdir -p "$(dirname "$CONFIG_FILE")"
     
     update_config() {
@@ -153,7 +220,7 @@ while true; do
             clear
             echo "Starting Synchronization..."
             echo "----------------------------------------"
-            onedrive --sync -s
+            onedrive --confdir "$ONEDRIVE_CONFDIR" --sync -s
             echo "----------------------------------------"
             echo "Synchronization complete."
             pause
@@ -165,7 +232,7 @@ while true; do
                 clear
                 echo "Starting Full Resync..."
                 echo "----------------------------------------"
-                onedrive --resync --sync -s
+                onedrive --confdir "$ONEDRIVE_CONFDIR" --resync --sync -s
                 echo "----------------------------------------"
                 echo "Resync complete."
                 pause
@@ -173,13 +240,13 @@ while true; do
             ;;
         "3")
             TEMP_FILE=$(mktemp)
-            onedrive --display-sync-status > "$TEMP_FILE" 2>&1
+            onedrive --confdir "$ONEDRIVE_CONFDIR" --display-sync-status > "$TEMP_FILE" 2>&1
             whiptail --title "Sync Status" --backtitle "$BACKTITLE" --scrolltext --textbox "$TEMP_FILE" 24 80
             rm -f "$TEMP_FILE"
             ;;
         "4")
             TEMP_FILE=$(mktemp)
-            onedrive --display-config > "$TEMP_FILE" 2>&1
+            onedrive --confdir "$ONEDRIVE_CONFDIR" --display-config > "$TEMP_FILE" 2>&1
             whiptail --title "Configuration" --backtitle "$BACKTITLE" --scrolltext --textbox "$TEMP_FILE" 24 80
             rm -f "$TEMP_FILE"
             ;;
@@ -190,11 +257,11 @@ while true; do
             manage_sync_list
             ;;
         "7")
-            systemctl --user start onedrive >/dev/null 2>&1
+            systemctl --user start "$SVC_NAME" >/dev/null 2>&1
             if [ $? -eq 0 ]; then
                 whiptail --title "Success" --backtitle "$BACKTITLE" --msgbox "Background monitor service started successfully via systemctl." 8 60
             else
-                nohup onedrive --monitor > /dev/null 2>&1 &
+                nohup onedrive --confdir "$ONEDRIVE_CONFDIR" --monitor > /dev/null 2>&1 &
                 if [ $? -eq 0 ]; then
                     whiptail --title "Success (Fallback)" --backtitle "$BACKTITLE" --msgbox "systemctl failed. Started background monitor via nohup instead." 8 60
                 else
@@ -203,12 +270,12 @@ while true; do
             fi
             ;;
         "8")
-            systemctl --user stop onedrive >/dev/null 2>&1
+            systemctl --user stop "$SVC_NAME" >/dev/null 2>&1
             if [ $? -eq 0 ]; then
-                pkill -f 'onedrive --monitor'
+                pkill -f "onedrive.*--confdir.*$ONEDRIVE_CONFDIR.*--monitor"
                 whiptail --title "Success" --backtitle "$BACKTITLE" --msgbox "Background monitor service stopped." 8 60
             else
-                pkill -f 'onedrive --monitor'
+                pkill -f "onedrive.*--confdir.*$ONEDRIVE_CONFDIR.*--monitor"
                 if [ $? -eq 0 ]; then
                     whiptail --title "Success (Fallback)" --backtitle "$BACKTITLE" --msgbox "systemctl failed, but stopped nohup background monitor." 8 60
                 else
@@ -218,17 +285,17 @@ while true; do
             ;;
         "9")
             TEMP_FILE=$(mktemp)
-            systemctl --user status onedrive > "$TEMP_FILE" 2>&1
+            systemctl --user status "$SVC_NAME" > "$TEMP_FILE" 2>&1
             if [ $? -ne 0 ]; then
                 echo -e "\nNote: systemctl failed or is not running. Checking for standalone nohup processes:" >> "$TEMP_FILE"
-                ps aux | grep '[o]nedrive --monitor' >> "$TEMP_FILE"
+                ps aux | grep "[o]nedrive.*--confdir.*$ONEDRIVE_CONFDIR.*--monitor" >> "$TEMP_FILE"
                 if [ $? -ne 0 ]; then
-                    echo "No standalone onedrive --monitor processes found." >> "$TEMP_FILE"
+                    echo "No standalone monitor processes found for this profile." >> "$TEMP_FILE"
                 fi
             else
-                if pgrep -f 'onedrive --monitor' > /dev/null; then
+                if pgrep -f "onedrive.*--confdir.*$ONEDRIVE_CONFDIR.*--monitor" > /dev/null; then
                     echo -e "\nNote: found running standalone nohup processes as well:" >> "$TEMP_FILE"
-                    ps aux | grep '[o]nedrive --monitor' >> "$TEMP_FILE"
+                    ps aux | grep "[o]nedrive.*--confdir.*$ONEDRIVE_CONFDIR.*--monitor" >> "$TEMP_FILE"
                 fi
             fi
             whiptail --title "Monitor Service Status" --backtitle "$BACKTITLE" --scrolltext --textbox "$TEMP_FILE" 24 80
@@ -236,9 +303,9 @@ while true; do
             ;;
         "10")
             clear
-            echo "Showing logs for OneDrive service. Press 'q' to exit the log viewer."
+            echo "Showing logs for OneDrive service ($SVC_NAME). Press 'q' to exit the log viewer."
             echo "------------------------------------------------------------------"
-            journalctl --user-unit=onedrive -f
+            journalctl --user-unit="$SVC_NAME" -f
             pause
             ;;
         "11")
@@ -246,7 +313,7 @@ while true; do
             echo "Authentication"
             echo "----------------------------------------"
             echo "Please follow any prompts below to authenticate."
-            onedrive --reauth
+            onedrive --confdir "$ONEDRIVE_CONFDIR" --reauth
             echo "----------------------------------------"
             pause
             ;;
